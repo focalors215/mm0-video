@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MM0 一起看</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="home">
+  <main class="card">
+    <h1>🎬 MM0 一起看</h1>
+    <p class="muted">创建一个房间，把链接发给朋友，大家的播放进度会自动同步。</p>
+
+    <label>你的昵称</label>
+    <input id="name" maxlength="20" placeholder="例如：小明">
+
+    <button id="create" class="primary">创建新房间</button>
+
+    <div class="divider"><span>或加入已有房间</span></div>
+    <div class="row">
+      <input id="roomId" maxlength="40" placeholder="房间号">
+      <button id="join">加入</button>
+    </div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    try { $('name').value = localStorage.getItem('wt_name') || ''; } catch {}
+    function go(room) {
+      room = room.trim().replace(/[^\w-]/g, '');
+      if (!room) return alert('请输入有效的房间号');
+      try { localStorage.setItem('wt_name', $('name').value.trim()); } catch {}
+      location.href = '/r/' + encodeURIComponent(room);
+    }
+    $('create').onclick = () => go(Math.random().toString(36).slice(2, 8));
+    $('join').onclick = () => go($('roomId').value);
+    $('roomId').onkeydown = (e) => e.key === 'Enter' && go($('roomId').value);
+  </script>
+</body>
+</html>

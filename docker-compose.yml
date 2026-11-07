@@ -1,0 +1,12 @@
+services:
+  mm0-video:
+    build: .
+    image: mm0-video:latest
+    container_name: mm0-video
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - MAX_UPLOAD_GB=${MAX_UPLOAD_GB:-10}
+    volumes:
+      - ./data/uploads:/app/data/uploads

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>房间 - MM0 一起看</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="room">
+  <header>
+    <a href="/" class="logo">🎬 MM0 一起看</a>
+    <span>房间 <b id="roomLabel"></b></span>
+    <button id="copyLink">复制邀请链接</button>
+    <span id="status" class="muted">连接中…</span>
+  </header>
+
+  <div class="layout">
+    <section class="player">
+      <div class="video-wrap">
+        <video id="video" controls playsinline preload="auto"></video>
+        <div id="empty" class="overlay">还没有视频，在下方粘贴链接或上传文件</div>
+        <div id="unmute" class="overlay clickable hidden">▶ 点击这里加入同步播放</div>
+      </div>
+      <div id="title" class="title"></div>
+
+      <div class="source">
+        <input id="url" placeholder="粘贴视频链接（mp4 / webm / m3u8）">
+        <button id="setUrl">播放链接</button>
+        <label class="upload-btn">
+          上传本地视频
+          <input id="file" type="file" accept="video/*,.mkv" hidden>
+        </label>
+      </div>
+      <div id="progress" class="progress hidden"><div></div><span></span></div>
+    </section>
+
+    <aside class="side">
+      <h3>在线成员 <small id="count"></small></h3>
+      <ul id="users"></ul>
+      <h3>聊天</h3>
+      <div id="messages"></div>
+      <form id="chatForm">
+        <input id="chatInput" maxlength="500" placeholder="说点什么…" autocomplete="off">
+        <button>发送</button>
+      </form>
+    </aside>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/vendor/hls.js"></script>
+  <script src="/room.js"></script>
+</body>
+</html>
