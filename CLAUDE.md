@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MM0 一起看 (repo `focalors215/mm0-video`) is a watch-together site. Users join a room via `/r/<id>`, and play/pause/seek/rate stay in sync across everyone in the room. It also has chat and video sources: direct links, HLS, or local uploads. UI text and README are in Chinese, so keep new user-facing strings in Chinese.
 
+## Workflow
+
+Every change must be committed and pushed to GitHub (`git push` to `origin main`) when it is done; don't leave work only local. SSH auth is already set up on this host via `~/.ssh/id_ed25519`. After code changes, also rebuild the running container (`docker compose up -d --build`).
+
 ## Commands
 
 The host may not have Node installed. Docker is the primary runtime.
