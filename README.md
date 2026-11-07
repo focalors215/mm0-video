@@ -11,7 +11,7 @@
 
 ## Docker 部署
 ```bash
-git clone git@github.com:<你的用户名>/mm0-video.git
+git clone git@github.com:focalors215/mm0-video.git
 cd mm0-video
 docker compose up -d --build
 ```
