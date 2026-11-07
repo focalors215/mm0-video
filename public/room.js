@@ -30,14 +30,17 @@
   // ---------- 播放错误提示 ----------
   let loadTimer = null;
   let errorShown = false;
+  let proxied = false;       // 当前视频是否经服务器中转（只影响自己，不影响房间里其他人）
+  let canProxyNow = false;
   const isSafari = /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent);
   const inApp = /MicroMessenger|QQ\/|Weibo|DingTalk/i.test(navigator.userAgent);
 
-  function showError(title, detail) {
+  function showError(title, detail, canProxy = false) {
     errorShown = true;
     clearTimeout(loadTimer);
     $('errTitle').textContent = title;
     $('errDetail').textContent = detail || '';
+    $('errProxy').classList.toggle('hidden', !canProxy);
     $('errorBox').classList.remove('hidden');
     $('unmute').classList.add('hidden');
   }
@@ -45,12 +48,14 @@
     errorShown = false;
     $('errorBox').classList.add('hidden');
   }
-  $('errRetry').onclick = () => {
+  function reload(useProxy) {
     hideError();
     const src = currentSrc; currentSrc = '';
-    loadSource(src);
+    loadSource(src, useProxy);
     if (lastState) applyState(lastState, true);
-  };
+  }
+  $('errRetry').onclick = () => reload(proxied);
+  $('errProxy').onclick = () => reload(true);
 
   const MEDIA_ERR = {
     1: '视频加载被中止',
@@ -71,6 +76,11 @@
     let p = null;
     try { p = await (await fetch('/api/probe?url=' + encodeURIComponent(src))).json(); } catch {}
     if (!p) return '无法诊断：连接本站服务器失败。';
+    const typeOk = /^video\/|mpegurl/i.test(p.contentType);
+    const isVideoish = p.ok && !/html|json|text/.test(p.contentType) && !/\.m3u8(\?|$)/i.test(src);
+    // 服务器能拿到视频，只是类型不对：Safari / 内置浏览器直接自动切换到服务器中转
+    if (isVideoish && !typeOk && (isSafari || inApp) && !proxied) return { autoProxy: true };
+    canProxyNow = isVideoish && !proxied;
     if (p.reason) lines.push(p.reason + '。');
     else if (p.status === 401 || /未登录|login|unauthor/i.test(p.body)) lines.push(`链接需要登录才能访问（${p.status}）。\n请换成不需要登录的分享直链，或下载后用「上传本地视频」。`);
     else if (p.status === 403) lines.push('链接拒绝访问（403），可能有防盗链、链接签名已过期或限制了 IP。\n请重新获取链接，或下载后上传。');
@@ -80,15 +90,15 @@
     else if (/json|text/.test(p.contentType) && !/mpegurl/i.test(p.contentType)) lines.push('链接返回的是文本数据，不是视频文件：' + (p.body || '').slice(0, 80));
     else {
       // 服务器能正常拿到文件，问题出在浏览器这一侧
-      const typeOk = /^video\/|mpegurl/i.test(p.contentType);
-      if (!typeOk && (isSafari || inApp)) {
-        lines.push(`视频服务器返回的文件类型是「${p.contentType || '未知'}」而不是 video/mp4，Safari、iPhone/iPad 和微信/QQ 内置浏览器会拒绝播放这种链接。\n请改用 Chrome 或 Edge 打开本页。`);
+      if (proxied) {
+        lines.push('已经通过服务器中转仍无法播放，多半是视频编码当前浏览器不支持（常见于 MKV、H.265/HEVC、AC3/DTS 音轨）。\n可以换 Chrome / Edge 再试，或转成 H.264 + AAC 的 MP4。');
       } else if (mediaCode === 3 || mediaCode === 4) {
-        lines.push('链接可以访问，但视频编码当前浏览器不支持（常见于 MKV、H.265/HEVC、AC3/DTS 音轨）。\n可以换 Chrome / Edge 再试，或转成 H.264 + AAC 的 MP4。');
-        if (!typeOk) lines.push(`（服务器返回的文件类型：${p.contentType || '未知'}）`);
+        if (!typeOk) lines.push(`链接可以访问，但服务器返回的文件类型是「${p.contentType || '未知'}」，浏览器可能无法识别；也可能是视频编码不受支持（MKV、H.265/HEVC、AC3/DTS 音轨等）。`);
+        else lines.push('链接可以访问，但视频编码当前浏览器不支持（常见于 MKV、H.265/HEVC、AC3/DTS 音轨）。\n可以换 Chrome / Edge 再试，或转成 H.264 + AAC 的 MP4。');
       } else {
         lines.push(`本站服务器能正常访问这个链接（最终地址：${p.finalHost}），但你的浏览器加载失败。\n可能是你的网络连不上该视频服务器（例如开着代理、在海外访问国内 CDN），或网速太慢。`);
       }
+      if (canProxyNow) lines.push('可以点下方「通过服务器中转播放」试试（视频流量会经过本站服务器）。');
       if (!p.range) lines.push('提示：该服务器不支持断点续传，拖动进度条可能无效。');
     }
     if (location.protocol === 'https:' && /^http:\/\//i.test(src)) lines.push('另外：本站是 https，而视频链接是 http，浏览器会拦截这种混合内容。');
@@ -98,9 +108,15 @@
   async function handleLoadError(title, mediaCode) {
     if (errorShown || !currentSrc) return;
     const src = currentSrc;
+    canProxyNow = false;
     showError(title, '正在分析原因…');
     const detail = await diagnose(src, mediaCode);
-    if (src === currentSrc) showError(title, detail);
+    if (src !== currentSrc) return;
+    if (detail && detail.autoProxy) {
+      $('status').textContent = '已连接 · 当前浏览器不兼容该链接，已改为服务器中转播放';
+      return reload(true);
+    }
+    showError(title, detail, canProxyNow);
   }
 
   video.addEventListener('error', () => {
@@ -111,9 +127,10 @@
   video.addEventListener('loadedmetadata', () => { clearTimeout(loadTimer); hideError(); });
 
   // ---------- 载入视频 ----------
-  function loadSource(src) {
+  function loadSource(src, useProxy = false) {
     if (src === currentSrc) return;
     currentSrc = src;
+    proxied = useProxy && /^https?:\/\//i.test(src);
     hideError();
     clearTimeout(loadTimer);
     if (hls) { hls.destroy(); hls = null; }
@@ -143,7 +160,7 @@
       hls.loadSource(src);
       hls.attachMedia(video);
     } else {
-      video.src = src;
+      video.src = proxied ? '/api/stream?url=' + encodeURIComponent(src) : src;
     }
   }
 

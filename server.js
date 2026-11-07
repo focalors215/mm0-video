@@ -92,6 +92,52 @@ app.get('/api/probe', async (req, res) => {
   }
 });
 
+// ---------- 视频中转：给 Safari / iOS / 微信等浏览器修正文件类型 ----------
+// 部分网盘 CDN 返回 application/octet-stream + 下载附件头，Safari 会拒绝播放。
+// 由服务器转发视频流（保留 Range 断点续传），改成正确的 video/* 类型。
+// 只允许中转某个房间正在播放的链接，避免被当成公开代理。
+const EXT_TYPES = { '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm', '.ogv': 'video/ogg', '.mkv': 'video/x-matroska' };
+const { Readable } = require('stream');
+app.get('/api/stream', async (req, res) => {
+  const src = String(req.query.url || '');
+  if (![...rooms.values()].some((r) => r.src === src)) return res.status(403).send('只能中转房间里正在播放的视频');
+  let url;
+  try { url = new URL(src); } catch { return res.status(400).send('链接格式不正确'); }
+  const ac = new AbortController();
+  res.on('close', () => ac.abort());
+  try {
+    let r;
+    for (let i = 0; ; i++) {
+      if (i >= 6) return res.status(502).send('重定向次数过多');
+      await assertPublic(url);
+      const headers = { 'User-Agent': req.get('user-agent') || 'Mozilla/5.0' };
+      if (req.get('range')) headers.Range = req.get('range');
+      r = await fetch(url, { redirect: 'manual', headers, signal: ac.signal });
+      const loc = r.headers.get('location');
+      if (r.status >= 300 && r.status < 400 && loc) { r.body?.cancel(); url = new URL(loc, url); continue; }
+      break;
+    }
+    let type = (r.headers.get('content-type') || '').split(';')[0].trim();
+    if (!/^video\//.test(type)) {
+      const name = decodeURIComponent(new URL(src).pathname) + ' ' + (url.searchParams.get('filename') || '');
+      const ext = (name.match(/\.(mp4|m4v|mov|webm|ogv|mkv)\b/i) || [])[0];
+      type = EXT_TYPES[(ext || '.mp4').toLowerCase()];
+    }
+    res.status(r.status);
+    res.set('Content-Type', type);
+    res.set('Accept-Ranges', 'bytes');
+    res.set('Cache-Control', 'no-store');
+    for (const h of ['content-length', 'content-range', 'last-modified', 'etag']) {
+      const v = r.headers.get(h); if (v) res.set(h, v);
+    }
+    if (!r.body) return res.end();
+    Readable.fromWeb(r.body).on('error', () => res.destroy()).pipe(res);
+  } catch (e) {
+    if (!res.headersSent) res.status(502).send('中转失败：' + (e.cause?.code || e.message));
+    else res.destroy();
+  }
+});
+
 app.get('/healthz', (req, res) => res.send('ok'));
 app.get('/r/:id', (req, res) => res.sendFile(path.join(__dirname, 'public', 'room.html')));
 
