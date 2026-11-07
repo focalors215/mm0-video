@@ -27,15 +27,119 @@
     });
   }
 
+  // ---------- 播放错误提示 ----------
+  let loadTimer = null;
+  let errorShown = false;
+  const isSafari = /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent);
+  const inApp = /MicroMessenger|QQ\/|Weibo|DingTalk/i.test(navigator.userAgent);
+
+  function showError(title, detail) {
+    errorShown = true;
+    clearTimeout(loadTimer);
+    $('errTitle').textContent = title;
+    $('errDetail').textContent = detail || '';
+    $('errorBox').classList.remove('hidden');
+    $('unmute').classList.add('hidden');
+  }
+  function hideError() {
+    errorShown = false;
+    $('errorBox').classList.add('hidden');
+  }
+  $('errRetry').onclick = () => {
+    hideError();
+    const src = currentSrc; currentSrc = '';
+    loadSource(src);
+    if (lastState) applyState(lastState, true);
+  };
+
+  const MEDIA_ERR = {
+    1: '视频加载被中止',
+    2: '网络错误，视频下载中断',
+    3: '视频解码失败（文件可能损坏或编码不受支持）',
+    4: '浏览器无法播放这个链接',
+  };
+
+  // 让服务器去访问一次链接，拿到真实的状态码 / 文件类型，给出具体原因
+  async function diagnose(src, mediaCode) {
+    const lines = [];
+    if (/^\/uploads\//.test(src)) {
+      lines.push(mediaCode === 4 || mediaCode === 3
+        ? '上传的文件格式或编码浏览器不支持（常见于 MKV、AVI、H.265/HEVC、AC3/DTS 音轨）。\n建议转成 H.264 + AAC 的 MP4 后再上传。'
+        : '无法从服务器加载上传的文件，请检查服务器状态或重新上传。');
+      return lines.join('\n');
+    }
+    let p = null;
+    try { p = await (await fetch('/api/probe?url=' + encodeURIComponent(src))).json(); } catch {}
+    if (!p) return '无法诊断：连接本站服务器失败。';
+    if (p.reason) lines.push(p.reason + '。');
+    else if (p.status === 401 || /未登录|login|unauthor/i.test(p.body)) lines.push(`链接需要登录才能访问（${p.status}）。\n请换成不需要登录的分享直链，或下载后用「上传本地视频」。`);
+    else if (p.status === 403) lines.push('链接拒绝访问（403），可能有防盗链、链接签名已过期或限制了 IP。\n请重新获取链接，或下载后上传。');
+    else if (p.status === 404 || p.status === 410) lines.push(`文件不存在或链接已失效（${p.status}）。`);
+    else if (p.status >= 400) lines.push(`视频服务器返回错误 ${p.status}。`);
+    else if (/html/.test(p.contentType)) lines.push('这个链接打开的是网页，不是视频文件。\nB 站、YouTube、爱奇艺等视频网站的页面地址无法直接播放，需要以 .mp4 / .m3u8 结尾的视频文件直链。');
+    else if (/json|text/.test(p.contentType) && !/mpegurl/i.test(p.contentType)) lines.push('链接返回的是文本数据，不是视频文件：' + (p.body || '').slice(0, 80));
+    else {
+      // 服务器能正常拿到文件，问题出在浏览器这一侧
+      const typeOk = /^video\/|mpegurl/i.test(p.contentType);
+      if (!typeOk && (isSafari || inApp)) {
+        lines.push(`视频服务器返回的文件类型是「${p.contentType || '未知'}」而不是 video/mp4，Safari、iPhone/iPad 和微信/QQ 内置浏览器会拒绝播放这种链接。\n请改用 Chrome 或 Edge 打开本页。`);
+      } else if (mediaCode === 3 || mediaCode === 4) {
+        lines.push('链接可以访问，但视频编码当前浏览器不支持（常见于 MKV、H.265/HEVC、AC3/DTS 音轨）。\n可以换 Chrome / Edge 再试，或转成 H.264 + AAC 的 MP4。');
+        if (!typeOk) lines.push(`（服务器返回的文件类型：${p.contentType || '未知'}）`);
+      } else {
+        lines.push(`本站服务器能正常访问这个链接（最终地址：${p.finalHost}），但你的浏览器加载失败。\n可能是你的网络连不上该视频服务器（例如开着代理、在海外访问国内 CDN），或网速太慢。`);
+      }
+      if (!p.range) lines.push('提示：该服务器不支持断点续传，拖动进度条可能无效。');
+    }
+    if (location.protocol === 'https:' && /^http:\/\//i.test(src)) lines.push('另外：本站是 https，而视频链接是 http，浏览器会拦截这种混合内容。');
+    return lines.join('\n');
+  }
+
+  async function handleLoadError(title, mediaCode) {
+    if (errorShown || !currentSrc) return;
+    const src = currentSrc;
+    showError(title, '正在分析原因…');
+    const detail = await diagnose(src, mediaCode);
+    if (src === currentSrc) showError(title, detail);
+  }
+
+  video.addEventListener('error', () => {
+    if (!currentSrc || hls) return; // hls 的错误单独处理
+    const code = video.error ? video.error.code : 0;
+    handleLoadError(MEDIA_ERR[code] || '视频加载失败', code);
+  });
+  video.addEventListener('loadedmetadata', () => { clearTimeout(loadTimer); hideError(); });
+
   // ---------- 载入视频 ----------
   function loadSource(src) {
     if (src === currentSrc) return;
     currentSrc = src;
+    hideError();
+    clearTimeout(loadTimer);
     if (hls) { hls.destroy(); hls = null; }
     $('empty').classList.toggle('hidden', !!src);
     if (!src) { video.removeAttribute('src'); video.load(); return; }
+    if (location.protocol === 'https:' && /^http:\/\//i.test(src)) {
+      showError('浏览器拦截了这个链接', '本站使用 https，而视频链接是 http，浏览器出于安全原因禁止播放。\n请换成 https 开头的链接，或下载后上传。');
+      return;
+    }
+    loadTimer = setTimeout(() => {
+      if (video.readyState < 1) handleLoadError('视频加载超时', 0);
+    }, 20000);
     if (/\.m3u8(\?|$)/i.test(src) && !video.canPlayType('application/vnd.apple.mpegurl') && window.Hls && Hls.isSupported()) {
       hls = new Hls();
+      hls.on(Hls.Events.ERROR, (e, d) => {
+        if (!d.fatal) return;
+        if (d.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          const cors = d.response && d.response.code === 0;
+          if (cors) showError('m3u8 加载失败', '视频服务器不允许其他网站跨域读取（CORS），浏览器无法播放这个 m3u8。\n请换其他来源，或下载后上传。');
+          else handleLoadError(`m3u8 加载失败（${d.details}）`, 2);
+        } else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          showError('m3u8 视频解码失败', '视频编码当前浏览器不支持，或流已损坏。(' + d.details + ')');
+        } else {
+          showError('m3u8 播放失败', d.details);
+        }
+      });
       hls.loadSource(src);
       hls.attachMedia(video);
     } else {
@@ -103,6 +207,8 @@
   $('setUrl').onclick = () => {
     const url = $('url').value.trim();
     if (!/^https?:\/\//i.test(url)) return alert('请输入以 http:// 或 https:// 开头的视频链接');
+    if (/(bilibili\.com|b23\.tv|youtube\.com|youtu\.be|iqiyi\.com|v\.qq\.com|youku\.com|mgtv\.com|douyin\.com|ixigua\.com)/i.test(url) &&
+        !confirm('这看起来是视频网站的网页地址，不是视频文件直链，通常无法播放。\n仍然要试试吗？')) return;
     socket.emit('setSource', { src: url, title: decodeURIComponent(url.split('/').pop().split('?')[0]) });
     $('url').value = '';
   };

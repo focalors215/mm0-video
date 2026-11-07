@@ -3,6 +3,8 @@ const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const net = require('net');
+const dns = require('dns').promises;
 const multer = require('multer');
 const { Server } = require('socket.io');
 
@@ -39,6 +41,55 @@ app.post('/api/upload', (req, res) => {
     if (!req.file) return res.status(400).json({ error: '不是有效的视频文件' });
     res.json({ url: '/uploads/' + req.file.filename, name: req.file.originalname });
   });
+});
+
+// ---------- 链接诊断：播放失败时由前端调用，找出失败原因 ----------
+function isPrivateIp(ip) {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
+  }
+  const v = ip.toLowerCase();
+  if (v.startsWith('::ffff:')) return isPrivateIp(v.slice(7));
+  // 不拦截 fc00::/7：很多代理（fake-ip 模式）会把公网域名解析到这个段
+  return v === '::1' || v === '::' || v.startsWith('fe80');
+}
+async function assertPublic(u) {
+  if (!/^https?:$/.test(u.protocol)) throw new Error('只支持 http/https 链接');
+  const addrs = await dns.lookup(u.hostname, { all: true });
+  if (addrs.some((a) => isPrivateIp(a.address))) throw new Error('不允许访问内网地址');
+}
+app.get('/api/probe', async (req, res) => {
+  let url;
+  try { url = new URL(String(req.query.url || '')); } catch { return res.json({ ok: false, reason: '链接格式不正确' }); }
+  const hops = [];
+  try {
+    for (let i = 0; i < 6; i++) {
+      await assertPublic(url);
+      const r = await fetch(url, {
+        redirect: 'manual',
+        headers: { Range: 'bytes=0-1023', 'User-Agent': 'Mozilla/5.0 (mm0-video link probe)' },
+        signal: AbortSignal.timeout(10000),
+      });
+      const loc = r.headers.get('location');
+      hops.push({ status: r.status, host: url.hostname });
+      if (r.status >= 300 && r.status < 400 && loc) { r.body?.cancel(); url = new URL(loc, url); continue; }
+      const type = (r.headers.get('content-type') || '').split(';')[0].trim();
+      let body = '';
+      if (r.status >= 400 || /json|html|text/.test(type)) body = (await r.text()).slice(0, 200);
+      else r.body?.cancel();
+      return res.json({
+        ok: r.status < 400, status: r.status, contentType: type, hops,
+        range: r.status === 206 || r.headers.get('accept-ranges') === 'bytes',
+        cors: r.headers.get('access-control-allow-origin'),
+        finalHost: url.hostname, body,
+      });
+    }
+    res.json({ ok: false, reason: '重定向次数过多', hops });
+  } catch (e) {
+    res.json({ ok: false, reason: e.name === 'TimeoutError' ? '服务器连接该链接超时' : '服务器无法访问该链接：' + (e.cause?.code || e.message), hops });
+  }
 });
 
 app.get('/healthz', (req, res) => res.send('ok'));

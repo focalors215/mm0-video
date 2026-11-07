@@ -20,6 +20,13 @@
         <video id="video" controls playsinline preload="auto"></video>
         <div id="empty" class="overlay">还没有视频，在下方粘贴链接或上传文件</div>
         <div id="unmute" class="overlay clickable hidden">▶ 点击这里加入同步播放</div>
+        <div id="errorBox" class="overlay error hidden">
+          <div>
+            <div class="err-title" id="errTitle"></div>
+            <div class="err-detail" id="errDetail"></div>
+            <button id="errRetry">重试</button>
+          </div>
+        </div>
       </div>
       <div id="title" class="title"></div>
 
