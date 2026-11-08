@@ -9,5 +9,21 @@ services:
     environment:
       - MAX_UPLOAD_GB=${MAX_UPLOAD_GB:-10}
       - ICE_SERVERS=${ICE_SERVERS:-}
+      - RESOLVER_URL=http://resolver:8000
     volumes:
       - ./data/uploads:/app/data/uploads
+    depends_on:
+      - resolver
+
+  # 视频链接解析服务（B 站 / YouTube / 抖音 等），只在内部网络使用，不对外开放端口
+  resolver:
+    build: ./resolver
+    image: mm0-resolver:latest
+    container_name: mm0-resolver
+    restart: unless-stopped
+    environment:
+      - MAX_HEIGHT=${RESOLVE_MAX_HEIGHT:-1080}
+      - AUTO_UPDATE=${RESOLVER_AUTO_UPDATE:-1}
+      - BILI_FORCE_DASH=${BILI_FORCE_DASH:-}
+    volumes:
+      - ./data/cookies:/cookies:ro

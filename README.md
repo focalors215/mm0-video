@@ -7,6 +7,7 @@
 - 播放 / 暂停 / 跳转 / 倍速 实时同步，定期自动纠正进度漂移
 - 播放列表：加入列表、调整顺序、播完自动下一个；顺序 / 列表循环 / 单集循环 / 随机；播放历史一键重看
 - 支持视频直链（mp4 / webm）、HLS（m3u8，可选画质）、HTTP-FLV（flv）、DASH（mpd）
+- **视频网站链接解析**：直接粘贴 B 站、YouTube、抖音、西瓜、快手、AcFun、Twitch 等网页地址就能一起看（内置解析服务，基于 yt-dlp，支持上千个网站）
 - 支持上传本地视频（默认上限 10GB，可拖动进度条）
 - 字幕：上传 SRT / ASS / VTT 字幕（自动识别 GBK 编码），房间里所有人同步加载
 - 聊天 + 弹幕：聊天消息以弹幕飘过画面，全屏时也能看弹幕、发弹幕；新进房间能看到最近 100 条聊天
@@ -50,6 +51,28 @@ cd mm0-video
 docker compose up -d --build
 ```
 
+## 视频网站链接解析
+部署时会同时启动一个解析服务容器 `mm0-resolver`（只在内部使用，不对外开放端口）。在房间里粘贴网页地址即可：
+
+| 网站 | 情况 |
+|---|---|
+| B 站 | 不需要登录，最高 720P；放入 B 站 cookies 后可到 1080P（大会员视频需要大会员账号） |
+| YouTube | 最高 1080P。服务器 IP 被风控、提示要登录验证时，需要放入 YouTube cookies |
+| 抖音 | **必须**放入抖音 cookies（不需要登录，打开过 douyin.com 的浏览器即可） |
+| 其他网站 | 西瓜、快手、AcFun、Twitch、微博、Vimeo 等常见网站自动解析；其他网站在「高级选项」里勾选「解析网页链接」后尝试 |
+
+不支持：爱奇艺、腾讯视频、优酷、芒果 TV 等有版权加密（DRM）的视频。
+
+**播放流量**：B 站普通画质由观众浏览器直接从 B 站加载，不占服务器流量（直连失败会自动改走服务器中转）；YouTube、B 站高画质、抖音等需要经过服务器中转。
+
+**放入 cookies**：用浏览器扩展（例如 Chrome 的「Get cookies.txt LOCALLY」）在登录 / 打开对应网站后导出 Netscape 格式的 `cookies.txt`，多个网站的内容可以合并到同一个文件，保存为服务器上项目目录里的：
+```
+data/cookies/cookies.txt
+```
+放好后立即生效，不用重启。cookies 相当于你的登录凭证，只放在自己的服务器上。
+
+解析服务每次启动时会自动更新 yt-dlp（视频网站经常改版），并且每 24 小时空闲时自动重启一次来更新。
+
 ## 配置
 可选环境变量（写在项目目录的 `.env` 里，修改后运行 `FORCE=1 bash update.sh` 生效）：
 
@@ -57,6 +80,8 @@ docker compose up -d --build
 |---|---|---|
 | `PORT` | 3000 | 对外端口 |
 | `MAX_UPLOAD_GB` | 10 | 单个上传文件大小上限 |
+| `RESOLVE_MAX_HEIGHT` | 1080 | 解析视频时的最高画质（越高越占服务器中转流量） |
+| `RESOLVER_AUTO_UPDATE` | 1 | 解析服务启动时是否自动更新 yt-dlp，设为 0 关闭 |
 | `ICE_SERVERS` | 小米 + Google STUN | 语音聊天用的 STUN/TURN 服务器，JSON，例如 `[{"urls":"turn:turn.example.com:3478","username":"u","credential":"p"}]`。双方都在复杂 NAT 后面时需要 TURN 才能连通 |
 
 上传的视频保存在 `./data/uploads`，字幕在 `./data/uploads/subs`。

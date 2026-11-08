@@ -83,6 +83,7 @@ details.more summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .btn-link { display: inline-block; margin-top: 12px; color: var(--accent); font-size: 14px; }
 #gateForm { max-width: 320px; margin: 0 auto; }
 .title-row { display: flex; align-items: center; gap: 8px; }
+.page-link { font-size: 13px; font-weight: 400; color: var(--accent); margin-left: 6px; }
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
 .toolbar button, .toolbar .upload-btn, .toolbar select { padding: 6px 10px; font-size: 13px; }
 .toolbar select { width: auto; }

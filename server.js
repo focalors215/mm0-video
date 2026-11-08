@@ -16,6 +16,8 @@ const MAX_UPLOAD_GB = Number(process.env.MAX_UPLOAD_GB || 10);
 // 语音聊天用的 STUN/TURN 服务器，JSON 数组，格式同 RTCPeerConnection 的 iceServers
 let ICE_SERVERS = [{ urls: ['stun:stun.miwifi.com:3478', 'stun:stun.l.google.com:19302'] }];
 try { if (process.env.ICE_SERVERS) ICE_SERVERS = JSON.parse(process.env.ICE_SERVERS); } catch { console.warn('ICE_SERVERS 不是合法 JSON，已忽略'); }
+// 视频网站链接解析服务（resolver/ 目录，docker compose 里的 resolver 容器）
+const RESOLVER_URL = (process.env.RESOLVER_URL || '').replace(/\/+$/, '');
 fs.mkdirSync(SUB_DIR, { recursive: true });
 
 const SECRET = crypto.randomBytes(32); // 给中转的 m3u8 子链接签名，重启后失效
@@ -228,30 +230,40 @@ function rewriteM3u8(text, base, room) {
     return proxyPath(room, abs(t));
   }).join('\n');
 }
+const itemHeaders = (item) => (item.media ? item.media.headers : item.headers) || {};
 app.get('/api/stream', async (req, res) => {
   const src = String(req.query.url || '');
   const room = req.query.room ? rooms.get(String(req.query.room)) : findRoomBySrc(src);
   if (!room || !room.cur) return res.status(403).send('只能中转房间里正在播放的视频');
   const sig = String(req.query.sig || '');
   const expect = sign(room.id, room.cur.id, src);
-  const allowed = room.cur.src === src || (sig.length === expect.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect)));
+  const allowed = (!room.cur.media && room.cur.src === src) || (sig.length === expect.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect)));
   if (!allowed) return res.status(403).send('只能中转房间里正在播放的视频');
+  proxyMedia(req, res, room, src, itemHeaders(room.cur));
+});
+async function proxyMedia(req, res, room, src, extraHeaders) {
   let url;
   try { url = new URL(src); } catch { return res.status(400).send('链接格式不正确'); }
   const ac = new AbortController();
   res.on('close', () => ac.abort());
   try {
-    const headers = { 'user-agent': req.get('user-agent') || 'Mozilla/5.0', 'accept-encoding': 'identity', ...(room.cur.headers || {}) };
+    const headers = { 'user-agent': req.get('user-agent') || 'Mozilla/5.0', 'accept-encoding': 'identity', ...extraHeaders };
     if (req.get('range')) headers.range = req.get('range');
     const { r, url: finalUrl } = await fetchFollow(url, headers, ac.signal);
     let type = (r.headers.get('content-type') || '').split(';')[0].trim();
     const name = decodeURIComponent(url.pathname) + ' ' + (finalUrl.searchParams.get('filename') || '');
-    const isM3u8 = /mpegurl/i.test(type) || (/\.m3u8\b/i.test(name) && !/^video\//.test(type));
-    if (isM3u8 && r.status < 400) {
-      const text = await r.text();
-      res.set('Content-Type', 'application/vnd.apple.mpegurl');
+    // 只有类型是 mpegurl、或路径以 .m3u8 结尾才可能是播放列表（YouTube 的分片路径中间也带 .m3u8，不能用包含判断）
+    const maybeM3u8 = /mpegurl/i.test(type) || (/\.m3u8$/i.test(finalUrl.pathname) && !/^(video|audio)\//.test(type));
+    if (maybeM3u8 && r.status < 400 && !req.get('range')) {
+      const buf = Buffer.from(await r.arrayBuffer());
       res.set('Cache-Control', 'no-store');
-      return res.send(rewriteM3u8(text.slice(0, 20 * 1024 * 1024), finalUrl, room));
+      if (buf.length < 20 * 1024 * 1024 && buf.subarray(0, 64).toString('utf8').replace(/^\uFEFF/, '').trimStart().startsWith('#EXTM3U')) {
+        res.set('Content-Type', 'application/vnd.apple.mpegurl');
+        return res.send(rewriteM3u8(buf.toString('utf8'), finalUrl, room));
+      }
+      // 不是真正的播放列表：原样返回
+      res.status(r.status).set('Content-Type', type || 'application/octet-stream');
+      return res.send(buf);
     }
     if (!/^video\//.test(type)) {
       const ext = (name.match(/\.(mp4|m4v|mov|webm|ogv|mkv|flv|ts|m4s)\b/i) || [])[0];
@@ -270,6 +282,81 @@ app.get('/api/stream', async (req, res) => {
     if (!res.headersSent) res.status(502).send('中转失败：' + (e.cause?.code || e.message));
     else res.destroy();
   }
+}
+
+// ---------- 网页链接解析（B 站 / YouTube / 抖音 等） ----------
+// 解析出来的媒体地址会过期，所以房间里保存的是网页地址，播放时走 /api/play/<房间>/<条目>.<类型>，
+// 由服务器按需重新解析，再跳转或中转到真实地址。
+const RESOLVE_HOSTS = /(^|\.)(bilibili\.com|b23\.tv|bili2233\.cn|youtube\.com|youtu\.be|douyin\.com|iesdouyin\.com|ixigua\.com|kuaishou\.com|acfun\.cn|tiktok\.com|twitch\.tv|vimeo\.com|weibo\.com|weibo\.cn|x\.com|twitter\.com|dailymotion\.com|nicovideo\.jp)$/i;
+const MEDIA_EXT = /\.(mp4|m4v|webm|mkv|mov|ogv|flv|m3u8|mpd|ts)$/i;
+function shouldResolve(src, force) {
+  let u; try { u = new URL(src); } catch { return false; }
+  if (!/^https?:$/.test(u.protocol) || MEDIA_EXT.test(u.pathname)) return false;
+  return !!force || RESOLVE_HOSTS.test(u.hostname);
+}
+async function callResolver(page) {
+  if (!RESOLVER_URL) throw new Error('服务器没有配置解析服务（RESOLVER_URL），请用 docker compose 部署');
+  let r;
+  try { r = await fetch(`${RESOLVER_URL}/resolve?url=${encodeURIComponent(page)}`, { signal: AbortSignal.timeout(90000) }); }
+  catch (e) { throw new Error(e.name === 'TimeoutError' ? '解析超时，请稍后重试' : '连接不上解析服务，请确认 mm0-resolver 容器在运行'); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error(j.error || `解析服务出错（${r.status}）`);
+  return j;
+}
+// 媒体地址快过期（剩 5 分钟内）就重新解析；同一条目并发请求只解析一次
+async function ensureMedia(item) {
+  const m = item.media;
+  if (m && m.expires_at * 1000 - Date.now() > 5 * 60 * 1000) return m;
+  if (!item.resolving) {
+    item.resolving = callResolver(item.src).then((res) => (item.media = res)).finally(() => { item.resolving = null; });
+  }
+  return item.resolving;
+}
+const playExt = (m) => ({ hls: 'm3u8', 'hls-split': 'm3u8', dash: 'mpd' }[m.kind] || m.ext || 'mp4');
+const xmlEsc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// YouTube：视频 m3u8 + 音频 m3u8 组合成一个 HLS 主播放列表（hls.js / Safari 都支持独立音轨）
+function buildMaster(room, m) {
+  const lines = ['#EXTM3U', '#EXT-X-INDEPENDENT-SEGMENTS',
+    `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="audio",DEFAULT=YES,AUTOSELECT=YES,URI="${proxyPath(room, m.audio.url)}"`];
+  for (const v of m.video) {
+    const codecs = v.codecs ? `,CODECS="${v.codecs},${m.audio.codecs || 'mp4a.40.2'}"` : '';
+    lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=${v.bandwidth || 1000000}${v.width ? `,RESOLUTION=${v.width}x${v.height}` : ''}${codecs},AUDIO="aud"`);
+    lines.push(proxyPath(room, v.url));
+  }
+  return lines.join('\n') + '\n';
+}
+// B 站高画质：音视频分轨的 mp4，生成 DASH 描述文件交给 dash.js，分片经服务器中转（CDN 校验 Referer）
+function buildMpd(room, m) {
+  const rep = (x, i, kind) => `
+      <Representation id="${kind}${i}" bandwidth="${x.bandwidth || 1}" codecs="${xmlEsc(x.codecs || '')}"${x.width ? ` width="${x.width}" height="${x.height}"` : ''}${x.frame_rate ? ` frameRate="${xmlEsc(x.frame_rate)}"` : ''}>
+        <BaseURL>${xmlEsc(proxyPath(room, x.url))}</BaseURL>
+        <SegmentBase indexRange="${xmlEsc(x.index)}"><Initialization range="${xmlEsc(x.init)}"/></SegmentBase>
+      </Representation>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011" type="static" mediaPresentationDuration="PT${Number(m.duration) || 0}S" minBufferTime="PT1.5S">
+  <Period>
+    <AdaptationSet mimeType="video/mp4" segmentAlignment="true" startWithSAP="1">${m.video.map((x, i) => rep(x, i, 'v')).join('')}
+    </AdaptationSet>
+    <AdaptationSet mimeType="audio/mp4" segmentAlignment="true" startWithSAP="1">${m.audio.map((x, i) => rep(x, i, 'a')).join('')}
+    </AdaptationSet>
+  </Period>
+</MPD>
+`;
+}
+app.get('/api/play/:room/:file', async (req, res) => {
+  const room = rooms.get(req.params.room);
+  const itemId = req.params.file.split('.')[0];
+  if (!room || !room.cur || room.cur.id !== itemId || !room.cur.media) return res.status(404).send('这个视频已经不是房间正在播放的视频了');
+  const item = room.cur;
+  let m;
+  try { m = await ensureMedia(item); } catch (e) { return res.status(502).send('解析失败：' + e.message); }
+  if (room.cur !== item) return res.status(404).send('这个视频已经不是房间正在播放的视频了');
+  res.set('Cache-Control', 'no-store');
+  if (m.kind === 'hls-split') return res.type('application/vnd.apple.mpegurl').send(buildMaster(room, m));
+  if (m.kind === 'dash') return res.type('application/dash+xml').send(buildMpd(room, m));
+  // 浏览器能直接访问的（如 B 站 mp4）就跳转过去，不占服务器流量；播放失败时前端会带 ?proxy=1 改走中转
+  if (m.kind === 'file' && m.direct && req.query.proxy !== '1') return res.redirect(302, m.url);
+  proxyMedia(req, res, room, m.url, m.headers || {});
 });
 
 app.get('/healthz', (req, res) => res.send('ok'));
@@ -298,11 +385,13 @@ function currentTime(r) {
 function snapshot(r) {
   const c = r.cur || {};
   return {
-    src: c.src || '', title: c.title || '', itemId: c.id || '', subtitle: c.subtitle || null, proxy: !!c.headers,
+    src: c.media ? `/api/play/${encodeURIComponent(r.id)}/${c.id}.${playExt(c.media)}` : c.src || '',
+    page: c.media ? c.src : '', live: !!(c.media && c.media.is_live),
+    title: c.title || '', itemId: c.id || '', subtitle: c.subtitle || null, proxy: !!c.headers,
     playing: r.playing, time: currentTime(r), rate: r.rate, serverNow: Date.now(),
   };
 }
-const publicItem = (i) => ({ id: i.id, src: i.src, title: i.title, hasHeaders: !!i.headers, hasSubtitle: !!i.subtitle });
+const publicItem = (i) => ({ id: i.id, src: i.src, title: i.title, hasHeaders: !!i.headers, hasSubtitle: !!i.subtitle, resolved: !!i.media });
 function roomInfo(r) {
   return {
     name: r.name, public: r.public, hasPassword: !!r.passHash, controlMode: r.controlMode, mode: r.mode,
@@ -386,12 +475,25 @@ io.on('connection', (socket) => {
   });
 
   // 添加视频（可选立即播放）
-  socket.on('pl:add', (data = {}) => {
+  socket.on('pl:add', async (data = {}) => {
     if (!r) return;
     if (!canControl()) return deny('房主设置了仅房主和管理员可以换视频');
     const item = makeItem(data);
     if (!item) return deny('链接格式不正确');
     if (r.playlist.length >= 200) return deny('播放列表最多 200 个视频');
+    if (shouldResolve(item.src, data.resolve)) {
+      const room = r;
+      socket.emit('notice', '正在解析视频链接…');
+      try {
+        item.media = await callResolver(item.src);
+      } catch (e) {
+        return socket.emit('resolveError', e.message);
+      }
+      if (rooms.get(room.id) !== room || r !== room) return;
+      item.headers = null; // 解析出的请求头保存在 media 里
+      if (!data.title) item.title = clean(item.media.title, 100) || item.title;
+      socket.emit('notice', `解析成功：${item.title}`);
+    }
     r.playlist.push(item);
     if (data.play || !r.cur) { playItem(r, item, false); emitState(r); }
     emitInfo(r);

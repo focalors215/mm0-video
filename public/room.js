@@ -56,6 +56,7 @@
   const isM3u8 = (s) => /\.m3u8(\?|$)/i.test(s);
   const isFlv = (s) => /\.flv(\?|$)/i.test(s);
   const isMpd = (s) => /\.mpd(\?|$)/i.test(s);
+  const isPlay = (s) => /^\/api\/play\//.test(s); // 服务器解析出来的视频（B 站 / YouTube 等）
 
   function showError(title, detail, canProxy = false) {
     errorShown = true;
@@ -95,6 +96,17 @@
         : '无法从服务器加载上传的文件，请检查服务器状态或重新上传。');
       return lines.join('\n');
     }
+    if (isPlay(src)) {
+      let text = '';
+      try {
+        const r = await fetch(src + '?proxy=1', { headers: { Range: 'bytes=0-0' } });
+        if (!r.ok) text = await r.text();
+      } catch {}
+      if (text) return text;
+      return mediaCode === 3 || mediaCode === 4
+        ? '视频编码当前浏览器不支持，可以换 Chrome / Edge 再试。'
+        : '服务器已经解析出视频地址，但加载失败了，可能是视频网站限速或链接已失效，可以点「重试」重新解析。';
+    }
     let p = null;
     try { p = await (await fetch(`/api/probe?room=${encodeURIComponent(roomId)}&url=${encodeURIComponent(src)}`)).json(); } catch {}
     if (!p) return '无法诊断：连接本站服务器失败。';
@@ -108,7 +120,7 @@
     else if (p.status === 403) lines.push('链接拒绝访问（403），可能有防盗链、链接签名已过期或限制了 IP。\n如果是防盗链，可以在「防盗链 / 自定义请求头」里填 Referer 后重新添加；否则请重新获取链接，或下载后上传。');
     else if (p.status === 404 || p.status === 410) lines.push(`文件不存在或链接已失效（${p.status}）。`);
     else if (p.status >= 400) lines.push(`视频服务器返回错误 ${p.status}。`);
-    else if (/html/.test(p.contentType)) lines.push('这个链接打开的是网页，不是视频文件。\nB 站、YouTube、爱奇艺等视频网站的页面地址无法直接播放，需要以 .mp4 / .m3u8 / .flv 结尾的视频文件直链。');
+    else if (/html/.test(p.contentType)) lines.push('这个链接打开的是网页，不是视频文件。\n如果是视频网站的页面，可以展开「高级选项」勾选「解析网页链接」后重新添加（B 站、YouTube 等常见网站会自动解析）。');
     else if (/json|text/.test(p.contentType) && !/mpegurl/i.test(p.contentType)) lines.push('链接返回的是文本数据，不是视频文件：' + (p.body || '').slice(0, 80));
     else {
       // 服务器能正常拿到文件，问题出在浏览器这一侧
@@ -131,6 +143,11 @@
     if (errorShown || !currentSrc) return;
     const src = currentSrc;
     canProxyNow = false;
+    // 解析出来的视频默认让浏览器直连视频网站，失败了自动改走服务器中转
+    if (isPlay(src) && !proxied) {
+      $('status').textContent = '已连接 · 直连视频网站失败，已改为服务器中转播放';
+      return reload(true);
+    }
     showError(title, '正在分析原因…');
     const detail = await diagnose(src, mediaCode);
     if (src !== currentSrc) return;
@@ -168,7 +185,7 @@
   function loadSource(src, useProxy = false) {
     if (src === currentSrc) return;
     currentSrc = src;
-    proxied = useProxy && /^https?:\/\//i.test(src);
+    proxied = useProxy && (/^https?:\/\//i.test(src) || isPlay(src));
     hideError();
     clearTimeout(loadTimer);
     destroyEngine();
@@ -182,11 +199,12 @@
     loadTimer = setTimeout(() => {
       if (video.readyState < 1) handleLoadError('视频加载超时', 0);
     }, 20000);
-    const url = proxied ? proxyUrl(src) : src;
+    const url = !proxied ? src : isPlay(src) ? src + '?proxy=1' : proxyUrl(src);
 
     if (isFlv(src)) return loadFlv(src, url);
     if (isMpd(src)) return loadDash(src, url);
-    if (isM3u8(src) && !video.canPlayType('application/vnd.apple.mpegurl') && window.Hls && Hls.isSupported()) {
+    // 有 MSE 时一律用 hls.js（新版 Chrome 也自带 HLS，但不支持独立音轨等）；没有 MSE 的 iPhone 用系统自带播放
+    if (isM3u8(src) && window.Hls && Hls.isSupported()) {
       const hls = new Hls();
       engine = { kind: 'hls', p: hls };
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -292,6 +310,7 @@
     const changed = !lastState || s.src !== lastState.src || s.itemId !== lastState.itemId;
     lastState = s;
     $('title').textContent = s.title || '';
+    if (s.page) $('title').append(' ', el('a', { href: s.page, target: '_blank', rel: 'noopener noreferrer', class: 'page-link' }, '原网页 ↗'));
     if (s.src !== currentSrc || changed) {
       currentSrc = changed ? '' : currentSrc;
       loadSource(s.src, s.proxy || (proxied && s.src === currentSrc));
@@ -374,9 +393,9 @@
   function addUrl(play) {
     const url = $('url').value.trim();
     if (!/^https?:\/\//i.test(url)) return alert('请输入以 http:// 或 https:// 开头的视频链接');
-    if (/(bilibili\.com|b23\.tv|youtube\.com|youtu\.be|iqiyi\.com|v\.qq\.com|youku\.com|mgtv\.com|douyin\.com|ixigua\.com)/i.test(url) &&
-        !confirm('这看起来是视频网站的网页地址，不是视频文件直链，通常无法播放。\n仍然要试试吗？')) return;
-    socket.emit('pl:add', { src: url, headers: parseHeaders(), play });
+    if (/(iqiyi\.com|v\.qq\.com|youku\.com|mgtv\.com)/i.test(url) &&
+        !confirm('爱奇艺、腾讯视频、优酷、芒果 TV 的视频有版权加密，通常无法解析播放。\n仍然要试试吗？')) return;
+    socket.emit('pl:add', { src: url, headers: parseHeaders(), play, resolve: $('forceResolve').checked });
     $('url').value = '';
   }
   $('setUrl').onclick = () => addUrl(true);
@@ -429,7 +448,7 @@
     $('playlist').innerHTML = '';
     if (!info.playlist.length) $('playlist').append(el('li', { class: 'muted small empty' }, '列表是空的，粘贴链接后点「加入列表」'));
     info.playlist.forEach((it, i) => {
-      const tags = (it.hasHeaders ? ' 🔗' : '') + (it.hasSubtitle ? ' 💬' : '');
+      const tags = (it.resolved ? ' 🌐' : '') + (it.hasHeaders ? ' 🔗' : '') + (it.hasSubtitle ? ' 💬' : '');
       $('playlist').append(el('li', { class: it.id === cur ? 'current' : '' },
         el('span', { class: 'idx' }, it.id === cur ? '▶' : String(i + 1)),
         el('span', { class: 'name', title: it.src }, it.title + tags),
@@ -740,6 +759,11 @@
   socket.on('room', (i) => { info = i; renderInfo(); });
   socket.on('users', renderUsers);
   socket.on('chat', (m) => addMsg(m));
+  socket.on('resolveError', (text) => {
+    $('status').textContent = '已连接 · 解析失败';
+    addMsg({ system: true, text: '解析失败：' + text, t: Date.now() }, false);
+    alert('视频链接解析失败：\n' + text);
+  });
   let noticeTimer = null;
   socket.on('notice', (text) => {
     $('status').textContent = text;

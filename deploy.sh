@@ -52,7 +52,7 @@ if [ ! -f .env ]; then
   printf 'PORT=%s\nMAX_UPLOAD_GB=%s\n' "${PORT:-3000}" "${MAX_UPLOAD_GB:-10}" > .env
   info "已生成 .env（端口 ${PORT:-3000}），可编辑后运行 update.sh 生效"
 fi
-mkdir -p data/uploads
+mkdir -p data/uploads data/cookies
 PORT_NOW="$(grep -E '^PORT=' .env | cut -d= -f2)"; PORT_NOW="${PORT_NOW:-3000}"
 
 # 4. 构建并启动

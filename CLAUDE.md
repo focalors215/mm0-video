@@ -63,6 +63,16 @@ The backend is a single file, `server.js` (Express + Socket.IO). The frontend is
 
 **Voice.** WebRTC mesh (max 8). The server only tracks `r.voice` and relays `voice:signal` between members who are both in voice. ICE servers come from `ICE_SERVERS` via `/api/config`. getUserMedia requires https.
 
+**Link resolver (`resolver/`, container `mm0-resolver`).** A separate Python service (stdlib HTTP server + yt-dlp + deno for YouTube's JS), reachable only on the compose network at `RESOLVER_URL=http://resolver:8000`. `GET /resolve?url=` returns `kind` = `file` | `hls` | `hls-split` (YouTube video+audio m3u8) | `dash` (Bilibili split mp4 with SegmentBase), plus `headers`, `direct`, `expires_at`.
+- Bilibili uses its public web API directly (html5 mp4 up to 720p without login, DASH if cookies give higher). It prefers `backup_url` hosts over PCDN nodes (`*.mcdn.bilivideo.cn:8082`), which often refuse connections.
+- Everything else goes through yt-dlp. Douyin needs user-supplied cookies; don't add code that mints guest cookies or bypasses bot checks. Cookies come only from `data/cookies/cookies.txt` (mounted read-only; yt-dlp gets a temp copy).
+- yt-dlp is upgraded by `entrypoint.sh` on every start, and the process exits when idle after 24h so docker restarts it.
+- `BILI_FORCE_DASH=1` (passed through compose) forces the DASH path, so it can be tested without a logged-in cookie.
+
+**Resolved items in server.js.** An item whose URL matches `RESOLVE_HOSTS` (or `resolve: true` from the client) is resolved in `pl:add`; `item.src` stays the page URL and `item.media` holds the resolver result. `snapshot().src` becomes `/api/play/<room>/<itemId>.<mp4|m3u8|mpd|flv>`, which only serves the room's current item, re-resolves via `ensureMedia()` when within 5 min of expiry, then: builds an HLS master (`buildMaster`) or MPD (`buildMpd`) whose URIs are signed `/api/stream` URLs, 302-redirects `direct` files, or proxies. `?proxy=1` forces proxying; room.js retries with it automatically when direct playback fails. `/api/stream` refuses the page URL of a resolved item itself.
+
+**HLS in room.js** always uses hls.js when MSE exists, even though recent Chrome reports native HLS support: the native player can't handle the separate audio rendition in YouTube masters.
+
 **SSRF guard.** `assertPublic()` resolves DNS and runs on *every redirect hop* in both probe and stream. IPv6 `fc00::/7` and `198.18.0.0/15` are intentionally **not** blocked. The deploy host uses a fake-IP proxy DNS that resolves public domains into those ranges, and blocking them broke all links.
 
 ## Deployment notes

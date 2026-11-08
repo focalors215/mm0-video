@@ -70,7 +70,7 @@
       </div>
 
       <div class="source ctl-area">
-        <input id="url" placeholder="粘贴视频链接（mp4 / webm / m3u8 / flv / mpd）">
+        <input id="url" placeholder="粘贴视频链接（mp4 / m3u8 / flv，或 B 站 / YouTube / 抖音 网页地址）">
         <button id="setUrl" class="ctl">立即播放</button>
         <button id="addUrl" class="ctl">加入列表</button>
         <label class="upload-btn ctl">
@@ -79,10 +79,12 @@
         </label>
       </div>
       <details class="adv ctl-area">
-        <summary>防盗链 / 自定义请求头</summary>
+        <summary>高级选项：防盗链请求头 / 解析网页链接</summary>
         <p class="muted small">视频需要特定 Referer 或 Cookie 才能访问时填写，每行一个，例如 <code>Referer: https://example.com/</code>。<br>
           支持 Referer、Origin、User-Agent、Cookie、Authorization。填写后所有人都会通过服务器中转播放（流量经过服务器），请求头只保存在服务器上，不会发给其他成员。</p>
         <textarea id="headers" rows="3" placeholder="Referer: https://example.com/"></textarea>
+        <label class="check" style="margin-top:8px"><input type="checkbox" id="forceResolve"> 解析网页链接（用 yt-dlp 尝试解析任意视频网站的页面地址）</label>
+        <p class="muted small">B 站、YouTube、抖音、西瓜、快手、AcFun、Twitch、微博等网站的页面地址会自动解析，不用勾选。</p>
       </details>
       <div id="progress" class="progress hidden"><div></div><span></span></div>
     </section>
