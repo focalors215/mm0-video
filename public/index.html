@@ -4,37 +4,93 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MM0 一起看</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎬</text></svg>">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body class="home">
-  <main class="card">
-    <h1>🎬 MM0 一起看</h1>
-    <p class="muted">创建一个房间，把链接发给朋友，大家的播放进度会自动同步。</p>
+  <div class="home-wrap">
+    <main class="card">
+      <h1>🎬 MM0 一起看</h1>
+      <p class="muted">创建一个房间，把链接发给朋友，大家的播放进度会自动同步。</p>
 
-    <label>你的昵称</label>
-    <input id="name" maxlength="20" placeholder="例如：小明">
+      <label>你的昵称</label>
+      <input id="name" maxlength="20" placeholder="例如：小明">
 
-    <button id="create" class="primary">创建新房间</button>
+      <details class="more">
+        <summary>房间选项（名称、公开、密码）</summary>
+        <label>房间名称</label>
+        <input id="roomName" maxlength="40" placeholder="例如：周末电影夜">
+        <label class="check" style="margin-top:12px"><input type="checkbox" id="public"> 公开到首页大厅，任何人都能看到并加入</label>
+        <label>房间密码（可选）</label>
+        <input id="password" type="password" maxlength="64" placeholder="留空则不需要密码" autocomplete="new-password">
+      </details>
 
-    <div class="divider"><span>或加入已有房间</span></div>
-    <div class="row">
-      <input id="roomId" maxlength="40" placeholder="房间号">
-      <button id="join">加入</button>
-    </div>
-  </main>
+      <button id="create" class="primary">创建新房间</button>
+
+      <div class="divider"><span>或加入已有房间</span></div>
+      <div class="row">
+        <input id="roomId" maxlength="200" placeholder="房间号或邀请链接">
+        <button id="join">加入</button>
+      </div>
+    </main>
+
+    <section class="lobby">
+      <h2>公开房间 <small id="lobbyCount" class="muted"></small></h2>
+      <div id="rooms" class="rooms"><p class="muted">加载中…</p></div>
+    </section>
+  </div>
 
   <script>
     const $ = (id) => document.getElementById(id);
     try { $('name').value = localStorage.getItem('wt_name') || ''; } catch {}
+    function saveName() { try { localStorage.setItem('wt_name', $('name').value.trim()); } catch {} }
     function go(room) {
+      const m = /\/r\/([^/?#]+)/.exec(room);
+      if (m) room = decodeURIComponent(m[1]);
       room = room.trim().replace(/[^\w-]/g, '');
       if (!room) return alert('请输入有效的房间号');
-      try { localStorage.setItem('wt_name', $('name').value.trim()); } catch {}
+      saveName();
       location.href = '/r/' + encodeURIComponent(room);
     }
-    $('create').onclick = () => go(Math.random().toString(36).slice(2, 8));
+    $('create').onclick = () => {
+      const id = Math.random().toString(36).slice(2, 8);
+      const opts = { name: $('roomName').value.trim(), public: $('public').checked, password: $('password').value };
+      try {
+        sessionStorage.setItem('wt_create_' + id, JSON.stringify(opts));
+        if (opts.password) sessionStorage.setItem('wt_pass_' + id, opts.password);
+      } catch {}
+      go(id);
+    };
     $('join').onclick = () => go($('roomId').value);
     $('roomId').onkeydown = (e) => e.key === 'Enter' && go($('roomId').value);
+
+    async function loadRooms() {
+      let list = [];
+      try { list = await (await fetch('/api/rooms')).json(); } catch { return; }
+      const box = $('rooms');
+      box.innerHTML = '';
+      $('lobbyCount').textContent = list.length ? `(${list.length})` : '';
+      if (!list.length) {
+        box.innerHTML = '<p class="muted">现在还没有公开房间。创建房间时勾选「公开到首页大厅」，就会显示在这里。</p>';
+        return;
+      }
+      for (const r of list) {
+        const a = document.createElement('a');
+        a.className = 'room-card';
+        a.href = '/r/' + encodeURIComponent(r.id);
+        a.onclick = saveName;
+        const top = document.createElement('div'); top.className = 'rc-top';
+        top.append((r.locked ? '🔒 ' : '') + (r.name || '房间 ' + r.id));
+        const on = document.createElement('span'); on.className = 'online'; on.textContent = `${r.online} 人在线`;
+        top.append(on);
+        const sub = document.createElement('div'); sub.className = 'rc-sub';
+        sub.textContent = r.locked ? '需要密码' : r.title ? `${r.playing ? '正在播放' : '已暂停'}：${r.title}` : '还没有选择视频';
+        a.append(top, sub);
+        box.append(a);
+      }
+    }
+    loadRooms();
+    setInterval(loadRooms, 10000);
   </script>
 </body>
 </html>

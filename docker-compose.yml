@@ -8,5 +8,6 @@ services:
       - "${PORT:-3000}:3000"
     environment:
       - MAX_UPLOAD_GB=${MAX_UPLOAD_GB:-10}
+      - ICE_SERVERS=${ICE_SERVERS:-}
     volumes:
       - ./data/uploads:/app/data/uploads

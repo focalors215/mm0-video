@@ -3,10 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
+    "dashjs": "4.7.4",
     "express": "^4.19.2",
     "hls.js": "^1.5.15",
+    "mpegts.js": "^1.8.0",
     "multer": "^1.4.5-lts.1",
     "socket.io": "^4.7.5"
   }

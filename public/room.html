@@ -4,20 +4,26 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>房间 - MM0 一起看</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎬</text></svg>">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body class="room">
   <header>
     <a href="/" class="logo">🎬 MM0 一起看</a>
-    <span>房间 <b id="roomLabel"></b></span>
+    <span>房间 <b id="roomLabel"></b> <span id="lockIcon" class="hidden" title="有密码">🔒</span></span>
     <button id="copyLink">复制邀请链接</button>
     <span id="status" class="muted">连接中…</span>
   </header>
 
   <div class="layout">
     <section class="player">
-      <div class="video-wrap">
-        <video id="video" controls playsinline preload="auto"></video>
+      <div class="video-wrap" id="wrap">
+        <video id="video" controls playsinline preload="auto" controlslist="nofullscreen"></video>
+        <div id="danmaku" class="danmaku"></div>
+        <button id="fsBtn" class="fs-btn" title="全屏（弹幕会一起显示）">⛶</button>
+        <form id="fsChat" class="fs-chat">
+          <input id="fsChatInput" maxlength="500" placeholder="发弹幕…" autocomplete="off">
+        </form>
         <div id="empty" class="overlay">还没有视频，在下方粘贴链接或上传文件</div>
         <div id="unmute" class="overlay clickable hidden">▶ 点击这里加入同步播放</div>
         <div id="errorBox" class="overlay error hidden">
@@ -28,29 +34,113 @@
             <button id="errRetry">重试</button>
           </div>
         </div>
+        <div id="gate" class="overlay error hidden">
+          <div>
+            <div class="err-title" id="gateTitle"></div>
+            <div class="err-detail" id="gateDetail"></div>
+            <form id="gateForm" class="row hidden">
+              <input id="gatePass" type="password" maxlength="64" placeholder="房间密码" autocomplete="current-password">
+              <button>进入</button>
+            </form>
+            <a href="/" class="btn-link">返回首页</a>
+          </div>
+        </div>
       </div>
-      <div id="title" class="title"></div>
+      <div class="title-row">
+        <div id="title" class="title"></div>
+      </div>
 
-      <div class="source">
-        <input id="url" placeholder="粘贴视频链接（mp4 / webm / m3u8）">
-        <button id="setUrl">播放链接</button>
-        <label class="upload-btn">
+      <div class="toolbar">
+        <button id="nextBtn" class="ctl" title="按播放顺序切到下一个">⏭ 下一个</button>
+        <label class="upload-btn ctl" title="上传 .srt / .ass / .vtt 字幕，房间里所有人都会加载">
+          上传字幕
+          <input id="subFile" type="file" accept=".srt,.ass,.ssa,.vtt" hidden>
+        </label>
+        <button id="subToggle" class="hidden toggle on">字幕：开</button>
+        <button id="danmakuToggle" class="toggle on" title="聊天消息以弹幕形式飘过画面">弹幕：开</button>
+        <select id="quality" class="hidden" title="画质（只影响自己）"></select>
+        <button id="pipBtn" class="hidden">画中画</button>
+        <label class="check" title="开启后自己的播放进度不再跟随房间，也不会影响别人">
+          <input type="checkbox" id="freeMode"> 自由模式
+        </label>
+        <button id="resync" class="hidden">同步到房间进度</button>
+        <span class="spacer"></span>
+        <button id="voiceBtn">🎙 加入语音</button>
+        <button id="muteBtn" class="hidden">静音</button>
+      </div>
+
+      <div class="source ctl-area">
+        <input id="url" placeholder="粘贴视频链接（mp4 / webm / m3u8 / flv / mpd）">
+        <button id="setUrl" class="ctl">立即播放</button>
+        <button id="addUrl" class="ctl">加入列表</button>
+        <label class="upload-btn ctl">
           上传本地视频
-          <input id="file" type="file" accept="video/*,.mkv" hidden>
+          <input id="file" type="file" accept="video/*,.mkv,.flv" hidden>
         </label>
       </div>
+      <details class="adv ctl-area">
+        <summary>防盗链 / 自定义请求头</summary>
+        <p class="muted small">视频需要特定 Referer 或 Cookie 才能访问时填写，每行一个，例如 <code>Referer: https://example.com/</code>。<br>
+          支持 Referer、Origin、User-Agent、Cookie、Authorization。填写后所有人都会通过服务器中转播放（流量经过服务器），请求头只保存在服务器上，不会发给其他成员。</p>
+        <textarea id="headers" rows="3" placeholder="Referer: https://example.com/"></textarea>
+      </details>
       <div id="progress" class="progress hidden"><div></div><span></span></div>
     </section>
 
     <aside class="side">
-      <h3>在线成员 <small id="count"></small></h3>
-      <ul id="users"></ul>
-      <h3>聊天</h3>
-      <div id="messages"></div>
-      <form id="chatForm">
-        <input id="chatInput" maxlength="500" placeholder="说点什么…" autocomplete="off">
-        <button>发送</button>
-      </form>
+      <nav class="tabs">
+        <button data-tab="chat" class="active">聊天</button>
+        <button data-tab="list">列表 <small id="plCount"></small></button>
+        <button data-tab="members">成员 <small id="count"></small></button>
+        <button data-tab="settings">设置</button>
+      </nav>
+
+      <div class="tab" id="tab-chat">
+        <div id="messages"></div>
+        <form id="chatForm">
+          <input id="chatInput" maxlength="500" placeholder="说点什么…（会以弹幕显示）" autocomplete="off">
+          <button>发送</button>
+        </form>
+      </div>
+
+      <div class="tab hidden" id="tab-list">
+        <div class="row">
+          <select id="mode" class="ctl">
+            <option value="order">顺序播放</option>
+            <option value="loop">列表循环</option>
+            <option value="one">单集循环</option>
+            <option value="shuffle">随机播放</option>
+          </select>
+          <button id="plClear" class="ctl" title="清空列表（保留正在播放的）">清空</button>
+        </div>
+        <ul id="playlist" class="items"></ul>
+        <h3>播放历史</h3>
+        <ul id="history" class="items"></ul>
+      </div>
+
+      <div class="tab hidden" id="tab-members">
+        <ul id="users" class="members"></ul>
+        <p class="muted small">房主可以设置管理员、转让房间；房主和管理员可以踢人（5 分钟内不能再进）、修改房间设置。</p>
+        <div id="voiceAudio" hidden></div>
+      </div>
+
+      <div class="tab hidden" id="tab-settings">
+        <form id="settingsForm" class="settings">
+          <label>房间名称</label>
+          <input id="setName" maxlength="40" placeholder="例如：周末电影夜">
+          <label class="check"><input type="checkbox" id="setPublic"> 公开到首页大厅</label>
+          <label>谁可以控制播放 / 换视频</label>
+          <select id="setControl">
+            <option value="all">所有人</option>
+            <option value="admins">仅房主和管理员</option>
+          </select>
+          <label>房间密码 <small id="passState" class="muted"></small></label>
+          <input id="setPass" type="password" maxlength="64" placeholder="留空则不修改" autocomplete="new-password">
+          <label class="check"><input type="checkbox" id="clearPass"> 取消密码</label>
+          <button class="primary">保存设置</button>
+          <p id="settingsNote" class="muted small"></p>
+        </form>
+      </div>
     </aside>
   </div>
 
